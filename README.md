@@ -1,6 +1,6 @@
-# quant-bench — LLM Quantization Benchmarking Tool
+#LLM Quantization Benchmarking Tool
 
-> Benchmark Ollama models across quantization levels — measuring speed, throughput, and semantic quality degradation — entirely on CPU-only hardware.
+> Benchmark Ollama models across quantization levels — measuring speed, throughput, and semantic quality degradation entirely on CPU-only hardware.
 
 ---
 
@@ -8,9 +8,9 @@
 
 **quant-bench** is a CLI tool that runs structured benchmarks against locally served [Ollama](https://ollama.com) models at different quantization levels (Q4, Q5, Q6, Q8). For each model variant it measures:
 
-- **Time to First Token (TTFT)** — latency from request to first streamed token, in milliseconds
-- **Throughput** — tokens per second, using Ollama's native `eval_count` / `eval_duration`
-- **Semantic quality score** — cosine similarity of responses relative to the highest available quant (Q8 baseline), using `all-MiniLM-L6-v2`
+- **Time to First Token (TTFT)**
+- **Throughput** 
+- **Semantic quality score**`
 
 Results are written as a rich terminal table, structured JSON, a Markdown report, and a scatter-plot chart visualising the speed/quality tradeoff curve.
 
@@ -18,7 +18,7 @@ Results are written as a rich terminal table, structured JSON, a Markdown report
 
 ## Features
 
-- Runs entirely locally — no cloud API keys required
+- Runs entirely locally
 - Designed for CPU-only hardware
 - Supports multiple models in a single run
 - Warmup-aware: first run per prompt is discarded, remaining runs are averaged
