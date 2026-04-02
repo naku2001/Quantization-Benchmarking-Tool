@@ -12,7 +12,11 @@ from unittest.mock import patch
 import pytest
 import responses as responses_mock
 
-from benchmark.runner import BenchmarkRunner, OllamaConnectionError
+from benchmark.runner import (
+    BenchmarkRunner,
+    OllamaConnectionError,
+    _resize_prompt,
+)
 
 BASE_URL = "http://localhost:11434"
 
@@ -285,3 +289,147 @@ class TestRunBenchmark:
         assert len(result["prompts"]) == 2
         assert result["prompts"][0]["prompt"] == "P1"
         assert result["prompts"][1]["prompt"] == "P2"
+
+
+# ---------------------------------------------------------------------------
+# _resize_prompt
+# ---------------------------------------------------------------------------
+
+class TestResizePrompt:
+    """Tests for the _resize_prompt helper."""
+
+    def test_truncates_long_prompt(self) -> None:
+        """A prompt longer than the target should be truncated to target_tokens * 4 chars."""
+        prompt = "a" * 10_000
+        result = _resize_prompt(prompt, 512)
+        assert len(result) == 512 * 4
+
+    def test_pads_short_prompt(self) -> None:
+        """A prompt shorter than the target should be padded to target_tokens * 4 chars."""
+        prompt = "hello "
+        result = _resize_prompt(prompt, 100)
+        assert len(result) == 100 * 4
+
+    def test_exact_length_unchanged(self) -> None:
+        """A prompt exactly at the target length should be returned as-is."""
+        prompt = "x" * (256 * 4)
+        result = _resize_prompt(prompt, 256)
+        assert len(result) == 256 * 4
+
+    def test_padded_content_is_repetition_of_original(self) -> None:
+        """Padding should be achieved by repeating the original prompt text."""
+        prompt = "abc"
+        result = _resize_prompt(prompt, 10)
+        # The result should be the first 40 chars of "abcabcabc…"
+        expected = ("abc" * ((40 // 3) + 1))[:40]
+        assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# run_context_sweep
+# ---------------------------------------------------------------------------
+
+class TestRunContextSweep:
+    """Tests for BenchmarkRunner.run_context_sweep."""
+
+    def _mock_benchmark(
+        self, runner: BenchmarkRunner, return_value: dict
+    ) -> None:
+        """Patch run_benchmark to always return *return_value*."""
+        runner.run_benchmark = lambda _m, prompts, _r=3: dict(  # type: ignore[method-assign]
+            return_value, prompts=[{"prompt": p, "runs": [], "avg_ttft_ms": 100.0,
+                                    "avg_tokens_per_sec": 5.0, "last_response": "r"} for p in prompts]
+        )
+
+    def test_produces_one_result_per_context_size(self) -> None:
+        """Each context size should produce a separate result dict."""
+        runner = BenchmarkRunner(base_url=BASE_URL)
+        self._mock_benchmark(runner, {"name": "llama3:q4", "quant": "Q4"})
+
+        results = runner.run_context_sweep(
+            "llama3:q4", ["Hello"], runs=2, context_sizes=[512, 2048]
+        )
+
+        assert len(results) == 2
+        assert results[0]["context_size"] == 512
+        assert results[1]["context_size"] == 2048
+
+    def test_context_size_tagged_on_each_result(self) -> None:
+        """Every result dict should carry the correct context_size key."""
+        runner = BenchmarkRunner(base_url=BASE_URL)
+        self._mock_benchmark(runner, {"name": "llama3:q4", "quant": "Q4"})
+
+        results = runner.run_context_sweep(
+            "llama3:q4", ["Hi"], runs=2, context_sizes=[512, 4096]
+        )
+
+        sizes = [r["context_size"] for r in results]
+        assert sizes == [512, 4096]
+
+    def test_prompts_are_resized_to_target(self) -> None:
+        """Prompts passed to run_benchmark should be resized to the target length."""
+        runner = BenchmarkRunner(base_url=BASE_URL)
+        captured: list[list[str]] = []
+
+        def fake_benchmark(model_name: str, prompts: list[str], runs: int = 3) -> dict:
+            captured.append(list(prompts))
+            return {
+                "name": model_name,
+                "quant": "Q4",
+                "prompts": [{"prompt": p, "runs": [], "avg_ttft_ms": 10.0,
+                              "avg_tokens_per_sec": 5.0, "last_response": "r"} for p in prompts],
+            }
+
+        runner.run_benchmark = fake_benchmark  # type: ignore[method-assign]
+
+        original_prompt = "x" * 100
+        runner.run_context_sweep(
+            "llama3:q4", [original_prompt], runs=2, context_sizes=[512]
+        )
+
+        assert len(captured) == 1
+        resized = captured[0][0]
+        assert len(resized) == 512 * 4
+
+    def test_original_prompt_stored_on_prompt_dict(self) -> None:
+        """Each prompt dict in the sweep result should carry original_prompt."""
+        runner = BenchmarkRunner(base_url=BASE_URL)
+
+        def fake_benchmark(model_name: str, prompts: list[str], runs: int = 3) -> dict:
+            return {
+                "name": model_name,
+                "quant": "Q4",
+                "prompts": [{"prompt": p, "runs": [], "avg_ttft_ms": 10.0,
+                              "avg_tokens_per_sec": 5.0, "last_response": "r"} for p in prompts],
+            }
+
+        runner.run_benchmark = fake_benchmark  # type: ignore[method-assign]
+
+        original = "Hello world"
+        results = runner.run_context_sweep(
+            "llama3:q4", [original], runs=2, context_sizes=[512]
+        )
+
+        assert results[0]["prompts"][0]["original_prompt"] == original
+
+    def test_uses_default_context_sizes_when_none_given(self) -> None:
+        """Omitting context_sizes should default to [512, 2048, 4096]."""
+        runner = BenchmarkRunner(base_url=BASE_URL)
+        call_count = 0
+
+        def fake_benchmark(model_name: str, prompts: list[str], runs: int = 3) -> dict:
+            nonlocal call_count
+            call_count += 1
+            return {
+                "name": model_name,
+                "quant": "Q4",
+                "prompts": [{"prompt": p, "runs": [], "avg_ttft_ms": 10.0,
+                              "avg_tokens_per_sec": 5.0, "last_response": "r"} for p in prompts],
+            }
+
+        runner.run_benchmark = fake_benchmark  # type: ignore[method-assign]
+
+        results = runner.run_context_sweep("llama3:q4", ["Hi"], runs=2)
+
+        assert call_count == 3  # one call per default context size
+        assert [r["context_size"] for r in results] == [512, 2048, 4096]

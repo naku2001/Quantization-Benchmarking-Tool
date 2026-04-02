@@ -132,3 +132,36 @@ class QualityScorer:
                     )
 
         return results
+
+    def score_sweep_results(
+        self,
+        sweep_results: list[dict[str, Any]],
+        baseline_quant: str,
+    ) -> list[dict[str, Any]]:
+        """Add ``quality_score`` to every prompt dict in a context-sweep result list.
+
+        Results are grouped by ``context_size`` before scoring so that each
+        quant variant is compared against the baseline quant **at the same
+        context size**.  Within each group, :meth:`score_results` is applied.
+
+        Args:
+            sweep_results: List of result dicts produced by
+                :meth:`~benchmark.runner.BenchmarkRunner.run_context_sweep`,
+                each carrying a ``"context_size"`` key.
+            baseline_quant: The quant label to treat as ground truth.
+
+        Returns:
+            The same *sweep_results* list, mutated in place, with
+            ``"quality_score"`` added to each prompt dict.
+        """
+        from collections import defaultdict
+
+        by_context: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for result in sweep_results:
+            ctx: int = result.get("context_size", 0)
+            by_context[ctx].append(result)
+
+        for ctx_size in sorted(by_context.keys()):
+            self.score_results(by_context[ctx_size], baseline_quant)
+
+        return sweep_results

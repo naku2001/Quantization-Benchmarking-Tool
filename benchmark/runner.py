@@ -8,6 +8,34 @@ import requests
 
 from benchmark.metrics import calculate_throughput, calculate_ttft, get_ram_usage_gb
 
+# Approximate character-to-token ratio used for prompt resizing.
+CHARS_PER_TOKEN: int = 4
+
+# Default context sizes (in tokens) used by run_context_sweep.
+DEFAULT_CONTEXT_SIZES: list[int] = [512, 2048, 4096]
+
+
+def _resize_prompt(prompt: str, target_tokens: int) -> str:
+    """Return a version of *prompt* approximately *target_tokens* tokens long.
+
+    Uses a rough ``CHARS_PER_TOKEN`` approximation (4 chars per token).
+    If the prompt is longer than the target it is truncated.  If shorter,
+    the prompt text is repeated until the target length is reached.
+
+    Args:
+        prompt: The original prompt string.
+        target_tokens: Desired length in tokens.
+
+    Returns:
+        Resized prompt string.
+    """
+    target_chars = target_tokens * CHARS_PER_TOKEN
+    if len(prompt) >= target_chars:
+        return prompt[:target_chars]
+    # Pad by repeating the prompt.
+    reps = (target_chars // len(prompt)) + 1
+    return (prompt * reps)[:target_chars]
+
 
 class OllamaConnectionError(Exception):
     """Raised when the Ollama API is unreachable or returns an unexpected error.
@@ -302,3 +330,49 @@ class BenchmarkRunner:
             "quant": quant,
             "prompts": prompt_results,
         }
+
+    # ------------------------------------------------------------------
+    # Context-length sweep
+    # ------------------------------------------------------------------
+
+    def run_context_sweep(
+        self,
+        model_name: str,
+        prompts: list[str],
+        runs: int = 3,
+        context_sizes: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Benchmark *model_name* at multiple input context sizes.
+
+        For each size in *context_sizes*, every prompt is truncated or padded
+        to approximately that many tokens before being sent to Ollama.  The
+        model's own context window is unchanged — this measures how input
+        length affects TTFT, throughput, and response quality.
+
+        Args:
+            model_name: Full Ollama model tag.
+            prompts: Original prompt strings.
+            runs: Total runs per prompt per context size (first is warmup).
+            context_sizes: Token counts to test.
+                Defaults to ``DEFAULT_CONTEXT_SIZES`` (512, 2048, 4096).
+
+        Returns:
+            A list of result dicts, one per context size.  Each dict is
+            identical to the output of :meth:`run_benchmark` but carries an
+            additional ``"context_size"`` key (int) and an
+            ``"original_prompt"`` key on every prompt dict.
+        """
+        if context_sizes is None:
+            context_sizes = DEFAULT_CONTEXT_SIZES
+
+        sweep_results: list[dict[str, Any]] = []
+        for ctx_size in context_sizes:
+            resized_prompts = [_resize_prompt(p, ctx_size) for p in prompts]
+            result = self.run_benchmark(model_name, resized_prompts, runs)
+            result["context_size"] = ctx_size
+            # Annotate each prompt entry with the original (unresized) text.
+            for i, prompt_dict in enumerate(result["prompts"]):
+                prompt_dict["original_prompt"] = prompts[i]
+            sweep_results.append(result)
+
+        return sweep_results

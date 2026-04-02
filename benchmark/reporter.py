@@ -219,6 +219,95 @@ class Reporter:
         plt.close(fig)
         _console.print(f"[green]Chart saved →[/green] {path}")
 
+    def print_context_sweep_table(self, sweep_results: list[dict[str, Any]]) -> None:
+        """Print a rich table summarising context-sweep benchmark results.
+
+        Columns: Model | Quant | Context (tokens) | TTFT (ms) | Tokens/sec | Quality Score
+
+        One row per result dict (i.e. one row per model × context-size combination),
+        sorted by model name then context size.
+
+        Args:
+            sweep_results: List of result dicts with a ``"context_size"`` key,
+                as returned by
+                :meth:`~benchmark.runner.BenchmarkRunner.run_context_sweep`.
+        """
+        table = Table(
+            title="[bold]Context Sweep Results[/bold]",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        table.add_column("Model", style="cyan", no_wrap=True)
+        table.add_column("Quant", style="yellow")
+        table.add_column("Context (tokens)", justify="right")
+        table.add_column("TTFT (ms)", justify="right")
+        table.add_column("Tokens/sec", justify="right")
+        table.add_column("Quality Score", justify="right")
+
+        sorted_results = sorted(
+            sweep_results,
+            key=lambda r: (r.get("name", ""), r.get("context_size", 0)),
+        )
+
+        for result in sorted_results:
+            avgs = _model_averages(result)
+            table.add_row(
+                result.get("name", "—"),
+                result.get("quant", "—"),
+                str(result.get("context_size", "—")),
+                f"{avgs['avg_ttft_ms']:.1f}",
+                f"{avgs['avg_tokens_per_sec']:.2f}",
+                f"{avgs['avg_quality_score']:.3f}",
+            )
+
+        _console.print(table)
+
+    def save_context_sweep_chart(self, sweep_results: list[dict[str, Any]]) -> None:
+        """Save a line chart of quality score vs input context length.
+
+        Groups results by model name + quant combination, drawing one line per
+        group.  X-axis is context size in tokens; Y-axis is average quality
+        score (cosine similarity to the Q8 baseline at the same context size).
+        Saved to ``results/context_sweep.png``.
+
+        Args:
+            sweep_results: List of result dicts with a ``"context_size"`` key.
+        """
+        # Build series: label → {context_size: avg_quality}
+        series: dict[str, dict[int, float]] = {}
+
+        for result in sweep_results:
+            label = f"{result.get('name', '?')} ({result.get('quant', '?')})"
+            ctx = result.get("context_size", 0)
+            prompt_entries = result.get("prompts", [])
+            if not prompt_entries:
+                continue
+            quality_scores = [p.get("quality_score", 0.0) for p in prompt_entries]
+            avg_quality = sum(quality_scores) / len(quality_scores)
+            if label not in series:
+                series[label] = {}
+            series[label][ctx] = avg_quality
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        for label, ctx_to_quality in series.items():
+            xs = sorted(ctx_to_quality.keys())
+            ys = [ctx_to_quality[x] for x in xs]
+            ax.plot(xs, ys, marker="o", label=label)
+
+        ax.set_xlabel("Input Context Size (tokens)", fontsize=12)
+        ax.set_ylabel("Quality Score (cosine similarity)", fontsize=12)
+        ax.set_title("Quality Score vs Input Context Length by Quantization", fontsize=14)
+        ax.set_ylim(0.0, 1.05)
+        ax.legend(fontsize=9)
+        ax.grid(True, linestyle="--", alpha=0.5)
+
+        plt.tight_layout()
+        path = os.path.join(self.output_dir, "context_sweep.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        _console.print(f"[green]Context sweep chart saved →[/green] {path}")
+
     def save_all(self, run_id: str, results: list[dict[str, Any]]) -> None:
         """Save JSON, Markdown, and chart outputs.
 
